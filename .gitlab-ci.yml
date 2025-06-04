@@ -1,0 +1,43 @@
+stages:
+  - project_private
+  - build
+  - test
+  - deploy
+
+project_private:
+  stage: project_private
+  script:
+    - echo "CI_PROJECT_VISIBILITY = $CI_PROJECT_VISIBILITY"
+    - /bin/bash -c 'if [[ $CI_PROJECT_VISIBILITY = "private" ]]; then exit 0; else echo "Set your project visibility to private! Settings -> General -> Visibility -> Project visibility"; exit 1; fi'
+  cache:
+    key: "$CI_JOB_STAGE-$CI_COMMIT_REF_NAME"
+  tags:
+    - "cmake"
+
+
+make:
+  stage: build
+  script:
+    - mkdir -p build
+    - cd build
+    - cmake -DCMAKE_BUILD_TYPE=Debug ..
+    - make
+  artifacts:
+    paths:
+      - build
+  tags:
+    - "cmake"
+
+
+tester:
+  stage: test
+  script:
+    - cd build
+    - ./test_all
+  tags:
+    - "cmake"
+
+checkReport:
+  stage: deploy
+  script:
+    - bash -c '[ -f report.pdf ]'
