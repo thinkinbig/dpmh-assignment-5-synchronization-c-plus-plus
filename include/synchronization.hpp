@@ -96,80 +96,483 @@ template <class T> struct ListBasedSetSync {
 // class M defines the used mutex, you can use the locks provided in tbb
 template <class T, class M>
 struct ListBasedSetCoarseLock : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Coarse-Grained Locking
-  // To implement it you can copy ListBasedSetNoSync and extend it for the needed locking.
+  // Coarse-Grained Locking: Single mutex protects entire data structure
   static constexpr char name[] = "coarse";
 
-  ListBasedSetCoarseLock() { }
+  struct Entry {
+    T key;
+    Entry *next;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+  M mutex;
+
+  ListBasedSetCoarseLock() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  bool contains(T k) {
+    typename M::scoped_lock lock(mutex);
+    Entry *curr = staticHead.next;
+    while (curr->key < k)
+      curr = curr->next;
+    return (curr->key == k);
+  }
+
+  void insert(T k) {
+    typename M::scoped_lock lock(mutex);
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
+    }
+    if (curr->key == k)
+      return;
+    Entry *n = new Entry{k, curr};
+    pred->next = n;
+  }
+
+  void remove(T k) {
+    typename M::scoped_lock lock(mutex);
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
+    }
+    if (curr->key == k) {
+      pred->next = curr->next;
+    }
+  }
 };
 
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetCoarseLockRW : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Coarse-Grained Locking with read/write lock
+  // Coarse-Grained Locking with read/write lock
   static constexpr char name[] = "coarseRW";
 
-  ListBasedSetCoarseLockRW() { }
+  struct Entry {
+    T key;
+    Entry *next;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+  M rwMutex;
+
+  ListBasedSetCoarseLockRW() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  bool contains(T k) {
+    typename M::scoped_lock lock(rwMutex, false); // read lock
+    Entry *curr = staticHead.next;
+    while (curr->key < k)
+      curr = curr->next;
+    return (curr->key == k);
+  }
+
+  void insert(T k) {
+    typename M::scoped_lock lock(rwMutex, true); // write lock
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
+    }
+    if (curr->key == k)
+      return;
+    Entry *n = new Entry{k, curr};
+    pred->next = n;
+  }
+
+  void remove(T k) {
+    typename M::scoped_lock lock(rwMutex, true); // write lock
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
+    }
+    if (curr->key == k) {
+      pred->next = curr->next;
+    }
+  }
 };
 
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetLockCoupling : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Lock Coupling
   static constexpr char name[] = "lockCoupling";
 
-  ListBasedSetLockCoupling() { }
+  struct Entry {
+    T key;
+    Entry *next;
+    M mutex;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+
+  ListBasedSetLockCoupling() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  bool contains(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    pred->mutex.unlock();
+    bool result = (curr->key == k);
+    curr->mutex.unlock();
+    return result;
+  }
+
+  void insert(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    if (curr->key == k) {
+      pred->mutex.unlock();
+      curr->mutex.unlock();
+      return; // 已存在
+    }
+      
+    Entry *n = new Entry{k, curr, M()};
+    pred->next = n;
+    pred->mutex.unlock();
+    curr->mutex.unlock();
+  }
+
+  void remove(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    if (curr->key == k) {
+      pred->next = curr->next;
+    }
+    pred->mutex.unlock();
+    curr->mutex.unlock();
+  }
 };
 
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetLockCouplingRW : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Lock Coupling with read/write locks
+  // Lock Coupling with read/write locks
   static constexpr char name[] = "lockCouplingRW";
 
-  ListBasedSetLockCouplingRW() { }
+  struct Entry {
+    T key;
+    Entry *next;
+    M rwMutex;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+
+  ListBasedSetLockCouplingRW() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  bool contains(T k) {
+    Entry *pred = &staticHead;
+    pred->rwMutex.lock_shared();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->rwMutex.lock_shared();
+      pred->rwMutex.unlock_shared();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->rwMutex.lock_shared();
+    pred->rwMutex.unlock_shared();
+    bool result = (curr->key == k);
+    curr->rwMutex.unlock_shared();
+    return result;
+  }
+
+  void insert(T k) {
+    Entry *pred = &staticHead;
+    pred->rwMutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->rwMutex.lock();
+      pred->rwMutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->rwMutex.lock();
+    if (curr->key == k) {
+      pred->rwMutex.unlock();
+      curr->rwMutex.unlock();
+      return; // 已存在
+    }
+      
+    Entry *n = new Entry{k, curr, M()};
+    pred->next = n;
+    pred->rwMutex.unlock();
+    curr->rwMutex.unlock();
+  }
+
+  void remove(T k) {
+    Entry *pred = &staticHead;
+    pred->rwMutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->rwMutex.lock();
+      pred->rwMutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->rwMutex.lock();
+    if (curr->key == k) {
+      pred->next = curr->next;
+    }
+    pred->rwMutex.unlock();
+    curr->rwMutex.unlock();
+  }
 };
 
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Optimistic Locking
+  // Optimistic Locking: Search without locks, then validate
   static constexpr char name[] = "optimistic";
 
-  ListBasedSetOptimistic() { }
+  struct Entry {
+    T key;
+    Entry *next;
+    M mutex;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+
+  ListBasedSetOptimistic() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  // 按地址顺序获取两个锁，避免死锁
+  void acquireOrderedLocks(Entry *a, Entry *b, 
+                          typename M::scoped_lock &lockA, 
+                          typename M::scoped_lock &lockB) {
+    if (a < b) {
+      lockA.acquire(a->mutex);
+      lockB.acquire(b->mutex);
+    } else {
+      lockB.acquire(b->mutex);
+      lockA.acquire(a->mutex);
+    }
+  }
+
+  bool validate(Entry *pred, Entry *curr) {
+    Entry *node = &staticHead;
+    while (node->key <= pred->key) {
+      if (node == pred)
+        return pred->next == curr;
+      node = node->next;
+    }
+    return false;
+  }
+
+  bool contains(T k) {
+    while (true) {
+      Entry *pred = &staticHead;
+      Entry *curr = pred->next;
+      while (curr->key < k) {
+        pred = curr;
+        curr = curr->next;
+      }
+      
+      typename M::scoped_lock predLock, currLock;
+      acquireOrderedLocks(pred, curr, predLock, currLock);
+      
+      if (validate(pred, curr)) {
+        return (curr->key == k);
+      }
+    }
+  }
+
+  void insert(T k) {
+    while (true) {
+      Entry *pred = &staticHead;
+      Entry *curr = pred->next;
+      while (curr->key < k) {
+        pred = curr;
+        curr = curr->next;
+      }
+      
+      typename M::scoped_lock predLock, currLock;
+      acquireOrderedLocks(pred, curr, predLock, currLock);
+      
+      if (validate(pred, curr)) {
+        if (curr->key == k)
+          return;
+        Entry *n = new Entry{k, curr, M()};
+        pred->next = n;
+        return;
+      }
+    }
+  }
+
+  void remove(T k) {
+    while (true) {
+      Entry *pred = &staticHead;
+      Entry *curr = pred->next;
+      while (curr->key < k) {
+        pred = curr;
+        curr = curr->next;
+      }
+      
+      typename M::scoped_lock predLock, currLock;
+      acquireOrderedLocks(pred, curr, predLock, currLock);
+      
+      if (validate(pred, curr)) {
+        if (curr->key == k) {
+          pred->next = curr->next;
+        }
+        return;
+      }
+    }
+  }
 };
 
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
-  // ToDo: implement ListBasedSetNoSync using Optimistic Lock Coupling
+  // Optimistic Lock Coupling: Combine optimistic and lock coupling
   static constexpr char name[] = "optimisticLockCoupling";
 
-  ListBasedSetOptimisticLockCoupling() { }
+  struct Entry {
+    T key;
+    Entry *next;
+    M mutex;
+  };
 
-  bool contains(T k) { return false; }
-  void insert(T k) { }
-  void remove(T k) { }
+  Entry staticHead;
+  Entry staticTail;
+
+  ListBasedSetOptimisticLockCoupling() {
+    staticHead.key = std::numeric_limits<T>::min();
+    staticHead.next = &staticTail;
+    staticTail.key = std::numeric_limits<T>::max();
+    staticTail.next = nullptr;
+  }
+
+  bool contains(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    pred->mutex.unlock();
+    bool result = (curr->key == k);
+    curr->mutex.unlock();
+    return result;
+  }
+
+  void insert(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    if (curr->key == k) {
+      pred->mutex.unlock();
+      curr->mutex.unlock();
+      return;
+    }
+    Entry *n = new Entry{k, curr, M()};
+    pred->next = n;
+    pred->mutex.unlock();
+    curr->mutex.unlock();
+  }
+
+  void remove(T k) {
+    Entry *pred = &staticHead;
+    pred->mutex.lock();
+    Entry *curr = pred->next;
+    
+    while (curr->key < k) {
+      curr->mutex.lock();
+      pred->mutex.unlock();
+      pred = curr;
+      curr = curr->next;
+    }
+    
+    curr->mutex.lock();
+    if (curr->key == k) {
+      pred->next = curr->next;
+    }
+    pred->mutex.unlock();
+    curr->mutex.unlock();
+  }
 };
 
 #endif // HW5_SYNCHRONIZATION_HPP
