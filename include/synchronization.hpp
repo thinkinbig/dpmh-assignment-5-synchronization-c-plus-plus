@@ -265,7 +265,7 @@ struct ListBasedSetLockCoupling : virtual public ListBasedSetSync<T> {
     if (curr->key == k) {
       pred->mutex.unlock();
       curr->mutex.unlock();
-      return; // 已存在
+      return;
     }
       
     Entry *n = new Entry{k, curr, M()};
@@ -352,7 +352,7 @@ struct ListBasedSetLockCouplingRW : virtual public ListBasedSetSync<T> {
     if (curr->key == k) {
       pred->rwMutex.unlock();
       curr->rwMutex.unlock();
-      return; // 已存在
+      return;
     }
       
     Entry *n = new Entry{k, curr, M()};
@@ -391,6 +391,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
   struct Entry {
     T key;
     Entry *next;
+    std::atomic<int> version{0};
     M mutex;
   };
 
@@ -404,7 +405,6 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  // 按地址顺序获取两个锁，避免死锁
   void acquireOrderedLocks(Entry *a, Entry *b, 
                           typename M::scoped_lock &lockA, 
                           typename M::scoped_lock &lockB) {
@@ -417,14 +417,10 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
     }
   }
 
-  bool validate(Entry *pred, Entry *curr) {
-    Entry *node = &staticHead;
-    while (node->key <= pred->key) {
-      if (node == pred)
-        return pred->next == curr;
-      node = node->next;
-    }
-    return false;
+  bool validate(Entry *pred, Entry *curr, int pred_version, int curr_version) {
+    return pred->version.load() == pred_version &&
+           curr->version.load() == curr_version &&
+           pred->next == curr;
   }
 
   bool contains(T k) {
@@ -434,12 +430,15 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
       while (curr->key < k) {
         pred = curr;
         curr = curr->next;
-      }
+      o
+
+      int pred_version = pred->version.load();
+      int curr_version = curr->version.load();
       
       typename M::scoped_lock predLock, currLock;
       acquireOrderedLocks(pred, curr, predLock, currLock);
       
-      if (validate(pred, curr)) {
+      if (validate(pred, curr, pred_version, curr_version)) {
         return (curr->key == k);
       }
     }
@@ -453,17 +452,28 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         pred = curr;
         curr = curr->next;
       }
+
+      int prev_version = pred->version.load();
+      int curr_version = curr->version.load();
       
       typename M::scoped_lock predLock, currLock;
       acquireOrderedLocks(pred, curr, predLock, currLock);
       
-      if (validate(pred, curr)) {
-        if (curr->key == k)
-          return;
-        Entry *n = new Entry{k, curr, M()};
-        pred->next = n;
+      if (!validate(pred, curr, pred_version, curr_version)) {
+        continue;
+      }
+
+      if (curr->key==k) {
         return;
       }
+
+      Entry *n = new Entry(k, curr, M());
+      pred->next = n;
+
+      pred->version.fetch_add(1);
+
+      return;
+
     }
   }
 
@@ -475,16 +485,27 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         pred = curr;
         curr = curr->next;
       }
+
+      int prev_version = prev->version.load();
+      int curr_version = curr->version.load();
       
       typename M::scoped_lock predLock, currLock;
       acquireOrderedLocks(pred, curr, predLock, currLock);
       
-      if (validate(pred, curr)) {
-        if (curr->key == k) {
-          pred->next = curr->next;
-        }
-        return;
+
+      if (!validate(pred, curr, prev_version, curr_version)) {
+        continue;
       }
+
+      if (curr->key != key) {
+        break;
+      }
+
+      prev->next = curr->next;
+      delete curr;
+      prev->version.fetch_add(1)o
+
+      return;
     }
   }
 };
@@ -498,6 +519,7 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
   struct Entry {
     T key;
     Entry *next;
+    std::atomic<int> version{0};
     M mutex;
   };
 
