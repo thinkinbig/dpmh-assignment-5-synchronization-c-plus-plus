@@ -1,4 +1,3 @@
-
 #include "synchronization.hpp"
 #include "perfEvent.hpp"
 

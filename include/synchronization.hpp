@@ -459,7 +459,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
       typename M::scoped_lock predLock, currLock;
       acquireOrderedLocks(pred, curr, predLock, currLock);
       
-      if (!validate(pred, curr, pred_version, curr_version)) {
+      if (!validate(pred, curr, prev_version, curr_version)) {
         continue;
       }
 
@@ -467,7 +467,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         return;
       }
 
-      Entry *n = new Entry(k, curr, M());
+      Entry *n = new Entry{k, curr, 0, M()};
       pred->next = n;
 
       pred->version.fetch_add(1);
@@ -486,14 +486,14 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         curr = curr->next;
       }
 
-      int prev_version = prev->version.load();
+      int pred_version = pred->version.load();
       int curr_version = curr->version.load();
       
       typename M::scoped_lock predLock, currLock;
       acquireOrderedLocks(pred, curr, predLock, currLock);
       
 
-      if (!validate(pred, curr, prev_version, curr_version)) {
+      if (!validate(pred, curr, pred_version, curr_version)) {
         continue;
       }
 
@@ -570,7 +570,7 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
       curr->mutex.unlock();
       return;
     }
-    Entry *n = new Entry{k, curr, M()};
+    Entry *n = new Entry{k, curr, 0, M()};
     pred->next = n;
     pred->mutex.unlock();
     curr->mutex.unlock();
