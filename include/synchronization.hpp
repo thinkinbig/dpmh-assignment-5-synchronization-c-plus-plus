@@ -430,7 +430,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
       while (curr->key < k) {
         pred = curr;
         curr = curr->next;
-      o
+      }
 
       int pred_version = pred->version.load();
       int curr_version = curr->version.load();
@@ -497,13 +497,13 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         continue;
       }
 
-      if (curr->key != key) {
+      if (curr->key != k) {
         break;
       }
 
-      prev->next = curr->next;
+      pred->next = curr->next;
       delete curr;
-      prev->version.fetch_add(1)o
+      pred->version.fetch_add(1);
 
       return;
     }
