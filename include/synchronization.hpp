@@ -2,19 +2,14 @@
 #define HW5_SYNCHRONIZATION_HPP
 
 #include "perfEvent.hpp"
-#include <algorithm>
 #include <atomic>
-#include <cassert>
-#include <cstring>
-#include <immintrin.h>
-#include <iostream>
-#include <sys/mman.h>
+
 
 // How to install:
 // https://askubuntu.com/questions/1170054/install-newest-tbb-thread-building-blocks-on-ubuntu-18-04
 #include <tbb/tbb.h>
 
-using namespace std;
+
 
 template <class T> struct ListBasedSetNoSync {
   static constexpr bool synchronized = false;
@@ -35,7 +30,7 @@ template <class T> struct ListBasedSetNoSync {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
+  bool contains(T k) const {
     Entry *curr = staticHead.next;
     // Iterate over all elements whose key is smaller, we stop at the first
     // element with key >= k
@@ -88,7 +83,7 @@ template <class T> struct ListBasedSetNoSync {
 template <class T> struct ListBasedSetSync {
   static constexpr bool synchronized = true;
 
-  virtual bool contains(T k) = 0;
+  virtual bool contains(T k) const = 0;
   virtual void insert(T k) = 0;
   virtual void remove(T k) = 0;
 };
@@ -106,7 +101,7 @@ struct ListBasedSetCoarseLock : virtual public ListBasedSetSync<T> {
 
   Entry staticHead;
   Entry staticTail;
-  M mutex;
+  mutable M mutex;
 
   ListBasedSetCoarseLock() {
     staticHead.key = std::numeric_limits<T>::min();
@@ -115,7 +110,7 @@ struct ListBasedSetCoarseLock : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
+  bool contains(T k) const {
     typename M::scoped_lock lock(mutex);
     Entry *curr = staticHead.next;
     while (curr->key < k)
@@ -164,7 +159,7 @@ struct ListBasedSetCoarseLockRW : virtual public ListBasedSetSync<T> {
 
   Entry staticHead;
   Entry staticTail;
-  M rwMutex;
+  mutable M rwMutex;
 
   ListBasedSetCoarseLockRW() {
     staticHead.key = std::numeric_limits<T>::min();
@@ -173,7 +168,7 @@ struct ListBasedSetCoarseLockRW : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
+  bool contains(T k) const {
     typename M::scoped_lock lock(rwMutex, false); // read lock
     Entry *curr = staticHead.next;
     while (curr->key < k)
@@ -217,7 +212,7 @@ struct ListBasedSetLockCoupling : virtual public ListBasedSetSync<T> {
   struct Entry {
     T key;
     Entry *next;
-    M mutex;
+    mutable M mutex;
   };
 
   Entry staticHead;
@@ -230,10 +225,10 @@ struct ListBasedSetLockCoupling : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
-    Entry *pred = &staticHead;
+  bool contains(T k) const {
+    const Entry *pred = &staticHead;
     pred->mutex.lock();
-    Entry *curr = pred->next;
+    const Entry *curr = pred->next;
     
     while (curr->key < k) {
       curr->mutex.lock();
@@ -304,7 +299,7 @@ struct ListBasedSetLockCouplingRW : virtual public ListBasedSetSync<T> {
   struct Entry {
     T key;
     Entry *next;
-    M rwMutex;
+    mutable M rwMutex;
   };
 
   Entry staticHead;
@@ -317,10 +312,10 @@ struct ListBasedSetLockCouplingRW : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
-    Entry *pred = &staticHead;
+  bool contains(T k) const {
+    const Entry *pred = &staticHead;
     pred->rwMutex.lock_shared();
-    Entry *curr = pred->next;
+    const Entry *curr = pred->next;
     
     while (curr->key < k) {
       curr->rwMutex.lock_shared();
@@ -392,7 +387,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
     T key;
     Entry *next;
     std::atomic<int> version{0};
-    M mutex;
+    mutable M mutex;
   };
 
   Entry staticHead;
@@ -405,107 +400,39 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  void acquireOrderedLocks(Entry *a, Entry *b, 
-                          typename M::scoped_lock &lockA, 
-                          typename M::scoped_lock &lockB) {
-    if (a < b) {
-      lockA.acquire(a->mutex);
-      lockB.acquire(b->mutex);
-    } else {
-      lockB.acquire(b->mutex);
-      lockA.acquire(a->mutex);
-    }
-  }
-
-  bool validate(Entry *pred, Entry *curr, int pred_version, int curr_version) {
-    return pred->version.load() == pred_version &&
-           curr->version.load() == curr_version &&
-           pred->next == curr;
-  }
-
-  bool contains(T k) {
-    while (true) {
-      Entry *pred = &staticHead;
-      Entry *curr = pred->next;
-      while (curr->key < k) {
-        pred = curr;
-        curr = curr->next;
-      }
-
-      int pred_version = pred->version.load();
-      int curr_version = curr->version.load();
-      
-      typename M::scoped_lock predLock, currLock;
-      acquireOrderedLocks(pred, curr, predLock, currLock);
-      
-      if (validate(pred, curr, pred_version, curr_version)) {
-        return (curr->key == k);
-      }
-    }
+  // TODO: Implement proper optimistic locking
+  bool contains(T k) const {
+    // Placeholder implementation - will be implemented properly
+    Entry *curr = staticHead.next;
+    while (curr->key < k)
+      curr = curr->next;
+    return (curr->key == k);
   }
 
   void insert(T k) {
-    while (true) {
-      Entry *pred = &staticHead;
-      Entry *curr = pred->next;
-      while (curr->key < k) {
-        pred = curr;
-        curr = curr->next;
-      }
-
-      int prev_version = pred->version.load();
-      int curr_version = curr->version.load();
-      
-      typename M::scoped_lock predLock, currLock;
-      acquireOrderedLocks(pred, curr, predLock, currLock);
-      
-      if (!validate(pred, curr, prev_version, curr_version)) {
-        continue;
-      }
-
-      if (curr->key==k) {
-        return;
-      }
-
-      Entry *n = new Entry{k, curr, 0, M()};
-      pred->next = n;
-
-      pred->version.fetch_add(1);
-
-      return;
-
+    // Placeholder implementation - will be implemented properly
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
     }
+    if (curr->key == k)
+      return;
+    Entry *n = new Entry{k, curr, 0, M()};
+    pred->next = n;
   }
 
   void remove(T k) {
-    while (true) {
-      Entry *pred = &staticHead;
-      Entry *curr = pred->next;
-      while (curr->key < k) {
-        pred = curr;
-        curr = curr->next;
-      }
-
-      int pred_version = pred->version.load();
-      int curr_version = curr->version.load();
-      
-      typename M::scoped_lock predLock, currLock;
-      acquireOrderedLocks(pred, curr, predLock, currLock);
-      
-
-      if (!validate(pred, curr, pred_version, curr_version)) {
-        continue;
-      }
-
-      if (curr->key != k) {
-        break;
-      }
-
+    // Placeholder implementation - will be implemented properly
+    Entry *pred = &staticHead;
+    Entry *curr = staticHead.next;
+    while (curr->key < k) {
+      pred = curr;
+      curr = curr->next;
+    }
+    if (curr->key == k) {
       pred->next = curr->next;
-      delete curr;
-      pred->version.fetch_add(1);
-
-      return;
     }
   }
 };
@@ -520,7 +447,7 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
     T key;
     Entry *next;
     std::atomic<int> version{0};
-    M mutex;
+    mutable M mutex;
   };
 
   Entry staticHead;
@@ -533,10 +460,10 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
     staticTail.next = nullptr;
   }
 
-  bool contains(T k) {
-    Entry *pred = &staticHead;
+  bool contains(T k) const {
+    const Entry *pred = &staticHead;
     pred->mutex.lock();
-    Entry *curr = pred->next;
+    const Entry *curr = pred->next;
     
     while (curr->key < k) {
       curr->mutex.lock();
