@@ -536,7 +536,7 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
       while (curr->key < k) {
         // Validate previous node's version before moving
         if (pred->version.load(std::memory_order_acquire) != pred_version) {
-          goto restart; // Version changed, retry
+          continue; // Version changed, retry from the beginning
         }
         pred = curr;
         pred_version = pred->version.load(std::memory_order_acquire);
@@ -548,8 +548,7 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
         return (curr->key == k);
       }
       
-      restart:
-      continue; // Retry on version mismatch
+      // Version mismatch, retry from the beginning
     }
   }
 
