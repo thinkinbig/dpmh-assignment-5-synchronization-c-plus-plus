@@ -381,6 +381,8 @@ struct ListBasedSetLockCouplingRW : virtual public ListBasedSetSync<T> {
   }
 };
 
+
+
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
@@ -390,6 +392,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
   struct Entry {
     T key;
     std::atomic<Entry*> next;  // Atomic pointer for race-free operations
+    
     Entry() : key(), next(nullptr) {}
     Entry(T k, Entry* n) : key(k), next(n) {}
   };
@@ -443,7 +446,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
 
   void insert(T k) {
     while (true) {
-      // Optimistic search without locks
+      // Optimistic traversal without locks
       Entry *pred = &staticHead;
       Entry *curr = pred->next.load(std::memory_order_acquire);
       
@@ -457,44 +460,53 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
         return;
       }
       
-      // Validate the entire path
-      if (validatePath(pred, curr, k)) {
-        // Create new node
+      // Lock only the predecessor for modification
+      typename M::scoped_lock lock(mutex);
+      
+      // Simple validation: check if pred->next still points to curr
+      if (pred->next.load(std::memory_order_acquire) == curr) {
+        // Path is valid, perform the insertion
         Entry *n = new Entry{k, curr};
-        
-        // Try optimistic modification with atomic compare-and-swap
-        Entry* expected = curr;
-        if (pred->next.compare_exchange_weak(expected, n, 
-                                           std::memory_order_release,
-                                           std::memory_order_relaxed)) {
-          return; // Success
-        }
-        // CAS failed, retry
-        delete n;
-        continue;
+        pred->next.store(n, std::memory_order_release);
+        return;
       }
       
-      // Validation failed - retry
+      // Path validation failed, retry
     }
   }
 
   void remove(T k) {
-    // Use pessimistic locking for remove to ensure correctness under high contention
-    typename M::scoped_lock lock(mutex);
-    
-    Entry *pred = &staticHead;
-    Entry *curr = pred->next.load(std::memory_order_acquire);
-    
-    while (curr->key < k) {
-      pred = curr;
-      curr = curr->next.load(std::memory_order_acquire);
-    }
-    
-    if (curr->key == k) {
-      Entry* next = curr->next.load(std::memory_order_acquire);
-      pred->next.store(next, std::memory_order_release);
-      // NOTE: This is a memory leak. In a real-world concurrent data
-      // structure, we would need a safe memory reclamation scheme.
+    while (true) {
+      // Optimistic traversal without locks
+      Entry *pred = &staticHead;
+      Entry *curr = pred->next.load(std::memory_order_acquire);
+      
+      while (curr->key < k) {
+        pred = curr;
+        curr = curr->next.load(std::memory_order_acquire);
+      }
+      
+      // Lock the entire structure for modification
+      typename M::scoped_lock lock(mutex);
+      
+      // Re-traverse under lock to find the correct position
+      pred = &staticHead;
+      curr = pred->next.load(std::memory_order_acquire);
+      
+      while (curr->key < k) {
+        pred = curr;
+        curr = curr->next.load(std::memory_order_acquire);
+      }
+      
+      // Now check if the key exists
+      if (curr->key == k) {
+        // Key found, remove it
+        pred->next.store(curr->next.load(std::memory_order_relaxed),
+                         std::memory_order_release);
+        // NOTE: This is a memory leak. In a real-world concurrent data
+        // structure, we would need a safe memory reclamation scheme.
+      }
+      return;
     }
   }
 };
