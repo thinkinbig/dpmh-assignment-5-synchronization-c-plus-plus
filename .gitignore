@@ -45,3 +45,6 @@ Makefile
 
 
 vendor/
+
+sync
+test_all

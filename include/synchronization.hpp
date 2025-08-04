@@ -502,7 +502,7 @@ struct ListBasedSetOptimistic : virtual public ListBasedSetSync<T> {
 // class M defines the used mutex
 template <class T, class M>
 struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
-  // Optimistic Lock Coupling: Combine optimistic and lock coupling
+  // Optimistic Lock Coupling: Optimistic reads, lock coupling for writes
   static constexpr char name[] = "optimisticLockCoupling";
 
   struct Entry {
@@ -527,79 +527,81 @@ struct ListBasedSetOptimisticLockCoupling : virtual public ListBasedSetSync<T> {
 
   bool contains(T k) const {
     while (true) {
+      // Get version numbers without locks (optimistic approach)
       const Entry *pred = &staticHead;
       int pred_version = pred->version.load(std::memory_order_acquire);
       const Entry *curr = pred->next.load(std::memory_order_acquire);
       
+      // Check version before moving to next node
       while (curr->key < k) {
+        // Validate previous node's version before moving
+        if (pred->version.load(std::memory_order_acquire) != pred_version) {
+          goto restart; // Version changed, retry
+        }
         pred = curr;
         pred_version = pred->version.load(std::memory_order_acquire);
         curr = curr->next.load(std::memory_order_acquire);
       }
       
+      // Check version again when reaching target position
       if (pred->version.load(std::memory_order_acquire) == pred_version) {
         return (curr->key == k);
       }
+      
+      restart:
+      continue; // Retry on version mismatch
     }
   }
 
   void insert(T k) {
     while (true) {
+      // Use lock coupling for write operations
       Entry *pred = &staticHead;
-      int pred_version = pred->version.load(std::memory_order_acquire);
-      Entry *curr = pred->next.load(std::memory_order_acquire);
-      int curr_version = curr->version.load(std::memory_order_acquire);
-
-      while (curr->key < k) {
-        pred = curr;
-        pred_version = pred->version.load(std::memory_order_acquire);
-        curr = curr->next.load(std::memory_order_acquire);
-        curr_version = curr->version.load(std::memory_order_acquire);
-      }
-
       pred->mutex.lock();
+      Entry *curr = pred->next.load(std::memory_order_acquire);
+      
+      while (curr->key < k) {
+        curr->mutex.lock();
+        pred->mutex.unlock();
+        pred = curr;
+        curr = pred->next.load(std::memory_order_acquire);
+      }
+      
       curr->mutex.lock();
-      if (validate(pred, pred_version, curr, curr_version)) {
-        if (curr->key == k) {
-          curr->mutex.unlock();
-          pred->mutex.unlock();
-          return;
-        }
-        Entry *n = new Entry(k, curr);
-        pred->next.store(n, std::memory_order_release);
-        pred->version.fetch_add(1, std::memory_order_release);
+      if (curr->key == k) {
         curr->mutex.unlock();
         pred->mutex.unlock();
         return;
       }
+      
+      // Create new node and insert
+      Entry *n = new Entry{k, curr};
+      pred->next.store(n, std::memory_order_release);
+      pred->version.fetch_add(1, std::memory_order_release); // Increment version
       curr->mutex.unlock();
       pred->mutex.unlock();
+      return;
     }
   }
 
-  bool validate(Entry* pred, int pred_version, Entry* curr, int curr_version) {
-    return pred->version.load(std::memory_order_acquire) == pred_version &&
-           curr->version.load(std::memory_order_acquire) == curr_version &&
-           pred->next.load(std::memory_order_acquire) == curr;
-  }
-
   void remove(T k) {
-    Entry* pred = &staticHead;
+    // Use lock coupling for write operations
+    Entry *pred = &staticHead;
     pred->mutex.lock();
-    Entry* curr = pred->next.load(std::memory_order_acquire);
-
+    Entry *curr = pred->next.load(std::memory_order_acquire);
+    
     while (curr->key < k) {
       curr->mutex.lock();
       pred->mutex.unlock();
       pred = curr;
       curr = pred->next.load(std::memory_order_acquire);
     }
-
+    
     curr->mutex.lock();
     if (curr->key == k) {
       pred->next.store(curr->next.load(std::memory_order_relaxed),
                        std::memory_order_release);
-      pred->version.fetch_add(1, std::memory_order_release);
+      pred->version.fetch_add(1, std::memory_order_release); // Increment version
       // NOTE: This is a memory leak. In a real-world concurrent data
       // structure, we would need a safe memory reclamation scheme like
       // epoch-based reclamation or hazard pointers to free `curr`.
