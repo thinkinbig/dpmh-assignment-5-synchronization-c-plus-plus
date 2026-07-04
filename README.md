@@ -1,20 +1,43 @@
-This is the 5th assignment for Data Processing on Modern Hardware. Read the assignment sheet before implementing anything.
+# DPMH Assignment 5: Synchronization in C++
 
-# Synchronization
+**Data Processing on Modern Hardware** — TUM
 
-Fork this project and make it private to work on this assignment.
+A study of **concurrency and synchronization primitives** in C++ and their performance characteristics in the context of database query processing.
 
-## Submission of this homework
-Commit your changes and push them into your GitLab repository so that we can see them.
+## Topics Covered
 
-## Files you need to modify
-* `synchronization.hpp`
+- **Mutexes**: `std::mutex`, spinlocks, and their overhead
+- **Atomic operations**: `std::atomic`, CAS loops
+- **Read-Write locks**: `std::shared_mutex`
+- **Lock-free data structures**
+- **Futex-based** synchronization
+- **Memory ordering** (sequentially consistent, acquire-release, relaxed)
+- **False sharing** detection and mitigation
+- Concurrent hash table and concurrent queue implementations
+- **Scalability analysis** under contention
 
-## Description of this project
+## Structure
 
-Your tasks are described the assignment sheet.  
-The programming language of this homework is C++. 
-We provide you a simple code skeleton, feel free to add functions.
+```
+├── src/           # C++ concurrent data structures
+├── include/       # Headers
+├── lib/           # External libraries
+├── plot.py        # Scalability visualization
+├── perf.csv       # Performance measurements
+├── report.pdf     # Report with analysis
+└── CMakeLists.txt # Build system
+```
 
-You can either use the provided `perfEvent.hpp` file for measuring the performance counters or use your tools from the previous assignments.
-`perfEvent.md` contains information how to use the PerfEvent struct.
+## Build & Run
+
+```bash
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j
+./synchronization_bench
+python3 ../plot.py
+```
+
+## Key Results
+
+Analysis of how different synchronization primitives scale from 1 to 64 threads, showing the overhead of cache coherence protocols and the benefits of lock-free designs.
